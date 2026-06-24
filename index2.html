@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Three.js · 3D Model</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0d0d14;
+      font-family: 'Courier New', monospace;
+      color: #c8c8d8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    h1 {
+      font-size: 0.75rem;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: #5a5a7a;
+      margin-bottom: 1.5rem;
+    }
+
+    #canvas-wrap {
+      position: relative;
+      border: 1px solid #1e1e30;
+      box-shadow: 0 0 60px rgba(90, 100, 255, 0.08);
+    }
+
+    #canvas-wrap canvas { display: block; }
+
+    #info {
+      position: absolute;
+      top: 12px; left: 14px;
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+      color: #2e2e50;
+      pointer-events: none;
+    }
+
+    .controls {
+      margin-top: 1.2rem;
+      display: flex;
+      gap: 2rem;
+      font-size: 0.68rem;
+      letter-spacing: 0.12em;
+      color: #3a3a58;
+    }
+
+    .controls span { display: flex; align-items: center; gap: 0.4rem; }
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #5a64ff;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Three.js · 3D Renderer</h1>
+
+  <div id="canvas-wrap">
+    <div id="info">DRAG TO ROTATE &nbsp;·&nbsp; SCROLL TO ZOOM &nbsp;·&nbsp; RIGHT-DRAG TO PAN</div>
+  </div>
+
+  <div class="controls">
+    <span><span class="dot"></span> MeshStandardMaterial</span>
+    <span><span class="dot" style="background:#ff6464"></span> PointLight</span>
+    <span><span class="dot" style="background:#64ffb4"></span> OrbitControls</span>
+  </div>
+
+  <!-- Three.js r128 from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+  <!-- OrbitControls (r128 compatible) -->
+  <script>
+  // Inline OrbitControls for r128 (no ES module import needed)
+  (function(){
+  THREE.OrbitControls = function ( object, domElement ) {
+    this.object = object;
+    this.domElement = domElement;
+    this.enabled = true;
+    this.target = new THREE.Vector3();
+    this.minDistance = 1; this.maxDistance = Infinity;
+    this.minPolarAngle = 0; this.maxPolarAngle = Math.PI;
+    this.enableDamping = true; this.dampingFactor = 0.08;
+    this.enableZoom = true; this.zoomSpeed = 1.0;
+    this.enableRotate = true; this.rotateSpeed = 0.8;
+    this.enablePan = true; this.panSpeed = 0.8;
+    this.autoRotate = false; this.autoRotateSpeed = 1.0;
+
+    var scope = this;
+    var STATE = { NONE:-1, ROTATE:0, DOLLY:1, PAN:2, TOUCH_ROTATE:3, TOUCH_DOLLY_PAN:4 };
+    var state = STATE.NONE;
+    var EPS = 1e-6;
+    var spherical = new THREE.Spherical();
+    var sphericalDelta = new THREE.Spherical();
+    var scale = 1;
+    var panOffset = new THREE.Vector3();
+    var rotateStart = new THREE.Vector2(), rotateEnd = new THREE.Vector2(), rotateDelta = new THREE.Vector2();
+    var panStart = new THREE.Vector2(), panEnd = new THREE.Vector2(), panDelta = new THREE.Vector2();
+    var dollyStart = new THREE.Vector2(), dollyEnd = new THREE.Vector2(), dollyDelta = new THREE.Vector2();
+
+    function getAutoRotationAngle(){ return 2*Math.PI/60/60*scope.autoRotateSpeed; }
+    function getZoomScale(){ return Math.pow(0.95, scope.zoomSpeed); }
+    function rotateLeft(a){ sphericalDelta.theta -= a; }
+    function rotateUp(a){ sphericalDelta.phi -= a; }
+
+    var panLeftV = new THREE.Vector3();
+    function panLeft(distance, matrix){
+      panLeftV.setFromMatrixColumn(matrix,0);
+      panLeftV.multiplyScalar(-distance);
+      panOffset.add(panLeftV);
+    }
+    var panUpV = new THREE.Vector3();
+    function panUp(distance, matrix){
+      panUpV.setFromMatrixColumn(matrix,1);
+      panUpV.multiplyScalar(distance);
+      panOffset.add(panUpV);
+    }
+    var panInternalV = new THREE.Vector3();
+    function pan(deltaX, deltaY){
+      var el = scope.domElement;
+      panInternalV.copy(scope.object.position).sub(scope.target);
+      var targetDist = panInternalV.length();
+      targetDist *= Math.tan((scope.object.fov/2)*Math.PI/180);
+      panLeft(2*deltaX*targetDist/el.clientHeight, scope.object.matrix);
+      panUp(2*deltaY*targetDist/el.clientHeight, scope.object.matrix);
+    }
+    function dollyIn(s){ scale /= s; }
+    function dollyOut(s){ scale *= s; }
+
+    this.update = function(){
+      var offset = new THREE.Vector3();
+      var quat = new THREE.Quaternion().setFromUnitVectors(object.up, new THREE.Vector3(0,1,0));
+      var quatInverse = quat.clone().inverse();
+      var lastPos = new THREE.Vector3();
+      var lastQuat = new THREE.Quaternion();
+      return function(){
+        var position = scope.object.position;
+        offset.copy(position).sub(scope.target);
+        offset.applyQuaternion(quat);
+        spherical.setFromVector3(offset);
+        if (scope.autoRotate && state===STATE.NONE) rotateLeft(getAutoRotationAngle());
+        if (scope.enableDamping){
+          spherical.theta += sphericalDelta.theta * scope.dampingFactor;
+          spherical.phi   += sphericalDelta.phi   * scope.dampingFactor;
+        } else {
+          spherical.theta += sphericalDelta.theta;
+          spherical.phi   += sphericalDelta.phi;
+        }
+        spherical.phi = Math.max(scope.minPolarAngle+EPS, Math.min(scope.maxPolarAngle-EPS, spherical.phi));
+        spherical.makeSafe();
+        spherical.radius *= scale;
+        spherical.radius = Math.max(scope.minDistance, Math.min(scope.maxDistance, spherical.radius));
+        scope.target.add(panOffset);
+        offset.setFromSpherical(spherical);
+        offset.applyQuaternion(quatInverse);
+        position.copy(scope.target).add(offset);
+        scope.object.lookAt(scope.target);
+        if (scope.enableDamping){
+          sphericalDelta.theta *= (1-scope.dampingFactor);
+          sphericalDelta.phi   *= (1-scope.dampingFactor);
+          panOffset.multiplyScalar(1-scope.dampingFactor);
+        } else {
+          sphericalDelta.set(0,0,0);
+          panOffset.set(0,0,0);
+        }
+        scale = 1;
+        if (lastPos.distanceToSquared(scope.object.position)>EPS*EPS ||
+            8*(1-lastQuat.dot(scope.object.quaternion))>EPS*EPS){
+          lastPos.copy(scope.object.position);
+          lastQuat.copy(scope.object.quaternion);
+          return true;
+        }
+        return false;
+      };
+    }();
+
+    // Mouse events
+    function onMouseDown(e){
+      if (!scope.enabled) return;
+      if (e.button===0){ if(!scope.enableRotate) return; rotateStart.set(e.clientX,e.clientY); state=STATE.ROTATE; }
+      else if (e.button===1){ if(!scope.enableZoom) return; dollyStart.set(e.clientX,e.clientY); state=STATE.DOLLY; }
+      else if (e.button===2){ if(!scope.enablePan) return; panStart.set(e.clientX,e.clientY); state=STATE.PAN; }
+      document.addEventListener('mousemove', onMouseMove, false);
+      document.addEventListener('mouseup', onMouseUp, false);
+    }
+    function onMouseMove(e){
+      if (!scope.enabled) return;
+      if (state===STATE.ROTATE){
+        rotateEnd.set(e.clientX,e.clientY);
+        rotateDelta.subVectors(rotateEnd,rotateStart).multiplyScalar(scope.rotateSpeed);
+        rotateLeft(2*Math.PI*rotateDelta.x/scope.domElement.clientWidth);
+        rotateUp(2*Math.PI*rotateDelta.y/scope.domElement.clientHeight);
+        rotateStart.copy(rotateEnd);
+      } else if (state===STATE.DOLLY){
+        dollyEnd.set(e.clientX,e.clientY);
+        dollyDelta.subVectors(dollyEnd,dollyStart);
+        if (dollyDelta.y>0) dollyIn(getZoomScale()); else if (dollyDelta.y<0) dollyOut(getZoomScale());
+        dollyStart.copy(dollyEnd);
+      } else if (state===STATE.PAN){
+        panEnd.set(e.clientX,e.clientY);
+        panDelta.subVectors(panEnd,panStart).multiplyScalar(scope.panSpeed);
+        pan(panDelta.x, panDelta.y);
+        panStart.copy(panEnd);
+      }
+      scope.update();
+    }
+    function onMouseUp(){ document.removeEventListener('mousemove',onMouseMove,false); document.removeEventListener('mouseup',onMouseUp,false); state=STATE.NONE; }
+    function onMouseWheel(e){ if (!scope.enabled||!scope.enableZoom) return; e.preventDefault(); if (e.deltaY<0) dollyOut(getZoomScale()); else if (e.deltaY>0) dollyIn(getZoomScale()); scope.update(); }
+    function onContextMenu(e){ if (!scope.enabled) return; e.preventDefault(); }
+
+    // Touch events
+    var touches = [new THREE.Vector2(), new THREE.Vector2()];
+    var prevTouches = [new THREE.Vector2(), new THREE.Vector2()];
+    function onTouchStart(e){
+      if (!scope.enabled) return;
+      if (e.touches.length===1){ state=STATE.TOUCH_ROTATE; touches[0].set(e.touches[0].pageX,e.touches[0].pageY); }
+      else if (e.touches.length===2){ state=STATE.TOUCH_DOLLY_PAN; touches[0].set(e.touches[0].pageX,e.touches[0].pageY); touches[1].set(e.touches[1].pageX,e.touches[1].pageY); }
+    }
+    function onTouchMove(e){
+      if (!scope.enabled) return; e.preventDefault();
+      if (e.touches.length===1 && state===STATE.TOUCH_ROTATE){
+        prevTouches[0].copy(touches[0]); touches[0].set(e.touches[0].pageX,e.touches[0].pageY);
+        rotateDelta.subVectors(touches[0],prevTouches[0]).multiplyScalar(scope.rotateSpeed);
+        rotateLeft(2*Math.PI*rotateDelta.x/scope.domElement.clientWidth);
+        rotateUp(2*Math.PI*rotateDelta.y/scope.domElement.clientHeight);
+      } else if (e.touches.length===2 && state===STATE.TOUCH_DOLLY_PAN){
+        prevTouches[0].copy(touches[0]); prevTouches[1].copy(touches[1]);
+        touches[0].set(e.touches[0].pageX,e.touches[0].pageY); touches[1].set(e.touches[1].pageX,e.touches[1].pageY);
+        var prevDist = prevTouches[0].distanceTo(prevTouches[1]);
+        var dist = touches[0].distanceTo(touches[1]);
+        if (prevDist > dist) dollyIn(getZoomScale()); else if (prevDist < dist) dollyOut(getZoomScale());
+        var prevMid = prevTouches[0].clone().add(prevTouches[1]).multiplyScalar(0.5);
+        var mid = touches[0].clone().add(touches[1]).multiplyScalar(0.5);
+        pan(prevMid.x-mid.x, prevMid.y-mid.y);
+      }
+      scope.update();
+    }
+    function onTouchEnd(){ state=STATE.NONE; }
+
+    scope.domElement.addEventListener('contextmenu', onContextMenu, false);
+    scope.domElement.addEventListener('mousedown',   onMouseDown, false);
+    scope.domElement.addEventListener('wheel',       onMouseWheel, { passive:false });
+    scope.domElement.addEventListener('touchstart',  onTouchStart, { passive:true });
+    scope.domElement.addEventListener('touchend',    onTouchEnd,   false);
+    scope.domElement.addEventListener('touchmove',   onTouchMove,  { passive:false });
+
+    this.dispose = function(){
+      scope.domElement.removeEventListener('contextmenu', onContextMenu, false);
+      scope.domElement.removeEventListener('mousedown',   onMouseDown, false);
+      scope.domElement.removeEventListener('wheel',       onMouseWheel, false);
+      scope.domElement.removeEventListener('touchstart',  onTouchStart, false);
+      scope.domElement.removeEventListener('touchend',    onTouchEnd,   false);
+      scope.domElement.removeEventListener('touchmove',   onTouchMove,  false);
+      document.removeEventListener('mousemove', onMouseMove, false);
+      document.removeEventListener('mouseup',   onMouseUp,   false);
+    };
+
+    this.update();
+  };
+  })();
+  </script>
+
+  <script>
+  // ─── Scene Setup ───────────────────────────────────────────────────
+  const W = 600, H = 480;
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(W, H);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  document.getElementById('canvas-wrap').appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0d0d14);
+  scene.fog = new THREE.Fog(0x0d0d14, 12, 30);
+
+  const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100);
+  camera.position.set(0, 1.2, 4.5);
+
+  // ─── Controls ──────────────────────────────────────────────────────
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.07;
+  controls.minDistance = 2;
+  controls.maxDistance = 12;
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 0.8;
+
+  // Stop auto-rotate on user interaction
+  renderer.domElement.addEventListener('mousedown', () => controls.autoRotate = false);
+  renderer.domElement.addEventListener('touchstart', () => controls.autoRotate = false, { passive: true });
+
+  // ─── Lighting ──────────────────────────────────────────────────────
+  // Ambient
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.25);
+  scene.add(ambientLight);
+
+  // Key light (warm, casts shadows)
+  const keyLight = new THREE.PointLight(0xffeedd, 1.8, 20);
+  keyLight.position.set(4, 5, 4);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.width = 1024;
+  keyLight.shadow.mapSize.height = 1024;
+  scene.add(keyLight);
+
+  // Fill light (cool blue)
+  const fillLight = new THREE.PointLight(0x4466ff, 0.8, 20);
+  fillLight.position.set(-4, 2, -3);
+  scene.add(fillLight);
+
+  // Rim light (subtle top highlight)
+  const rimLight = new THREE.DirectionalLight(0xaaaaff, 0.4);
+  rimLight.position.set(0, 6, -4);
+  scene.add(rimLight);
+
+  // Light helper spheres (subtle visual indicators)
+  [keyLight, fillLight].forEach(light => {
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.06, 8, 8),
+      new THREE.MeshBasicMaterial({ color: light.color })
+    );
+    mesh.position.copy(light.position);
+    scene.add(mesh);
+  });
+
+  // ─── Main Mesh (Rounded Box via BoxGeometry) ───────────────────────
+  const geometry = new THREE.BoxGeometry(1.5, 1.5, 1.5, 4, 4, 4);
+
+  const material = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x5a64ff),
+    metalness: 0.3,
+    roughness: 0.35,
+  });
+
+  const cube = new THREE.Mesh(geometry, material);
+  cube.castShadow = true;
+  cube.receiveShadow = true;
+  scene.add(cube);
+
+  // Wireframe overlay (subtle)
+  const wireMat = new THREE.MeshBasicMaterial({
+    color: 0x8888ff,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.06,
+  });
+  const wireframe = new THREE.Mesh(geometry, wireMat);
+  cube.add(wireframe);
+
+  // ─── Ground Plane ──────────────────────────────────────────────────
+  const groundGeo = new THREE.PlaneGeometry(14, 14);
+  const groundMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0a12,
+    roughness: 1.0,
+    metalness: 0.0,
+  });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -1.5;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // ─── Grid Helper ───────────────────────────────────────────────────
+  const grid = new THREE.GridHelper(12, 24, 0x1a1a2e, 0x1a1a2e);
+  grid.position.y = -1.49;
+  grid.material.transparent = true;
+  grid.material.opacity = 0.6;
+  scene.add(grid);
+
+  // ─── Orbiting Light Rig ────────────────────────────────────────────
+  let t = 0;
+
+  // ─── Animate ───────────────────────────────────────────────────────
+  function animate() {
+    requestAnimationFrame(animate);
+    t += 0.012;
+
+    // Orbit the key light slowly
+    keyLight.position.x = Math.sin(t * 0.6) * 5;
+    keyLight.position.z = Math.cos(t * 0.6) * 5;
+
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  // ─── Resize Handler ────────────────────────────────────────────────
+  window.addEventListener('resize', () => {
+    camera.aspect = W / H;
+    camera.updateProjectionMatrix();
+    renderer.setSize(W, H);
+  });
+  </script>
+</body>
+</html>
